@@ -1,0 +1,69 @@
+let
+    // Conexão a fonte de dados.
+    Source = Csv.Document(Web.Contents("https://docs.google.com/spreadsheets/d/e/2PACX-1vRGRJ4gp3bacfoBmHm83_o_hXRnkBAY7mRg8DNr5Khfkr3e8p1UR7-z31ZtW_Z2qI3wc6wPHDatYpTe/pub?gid=1136195654&single=true&output=csv"),[Delimiter=",", Columns=17, Encoding=65001, QuoteStyle=QuoteStyle.Csv]),
+    // Primeira linha promovida como cabeçalho.
+    #"Promoted Headers" = Table.PromoteHeaders(Source, [PromoteAllScalars=true]),
+    // Tipos de dados definidos.
+    #"Changed Type" = Table.TransformColumnTypes(#"Promoted Headers",{{"municipio", type text}, {"IBGE", Int64.Type}, {"IBGE7", Int64.Type}, {"UF", type text}, {"regiao", type text}, {"populacao_2020", Int64.Type}, {"eh_capital", type logical}, {"fonte_1", type text}, {"fonte_2", type text}, {"fonte_3", type text}, {"fonte_4", type text}, {"is_online", Int64.Type}, {"data_inicial", type text}, {"tipo_arquivo", type text}, {"validacao", type logical}, {"navegacao", type text}, {"observacoes", type text}}),
+    // Retirado a UF do nome do municipio, uma vez que já tem a coluna de UF na tabela.
+    #"Extracted Text Before Delimiter" = Table.TransformColumns(#"Changed Type", {{"municipio", each Text.BeforeDelimiter(_, " ("), type text}}),
+    // Remoção de colunas não necessárias para análise, "fonte_4" não tem valores, "validacao" somente tem valores TRUE, "navegacao" não tem uso na análise.
+    #"Removed Columns" = Table.RemoveColumns(#"Extracted Text Before Delimiter",{"fonte_4", "validacao", "navegacao"}),
+    // Obter formato de data da coluna.
+    #"Parsed Date" = Table.TransformColumns(#"Removed Columns",{{"data_inicial", each Date.From(DateTimeZone.From(_)), type date}}),
+    // Subsituir erros (valores vazios) por null.
+    #"Replaced Errors" = Table.ReplaceErrorValues(#"Parsed Date", {{"data_inicial", null}}),
+    // Obter o ano pela coluna data_inicial.
+    #"Inserted Year" = Table.AddColumn(#"Replaced Errors", "Year", each Date.Year([data_inicial]), Int64.Type),
+    // Alterar o tipo da coluna Year para texto para ser possível concatenar com o mês.
+    #"Changed Type1" = Table.TransformColumnTypes(#"Inserted Year",{{"Year", type text}}),
+    // Obter o nome do mês pela coluna data_inicial.
+    #"Inserted Month Name" = Table.AddColumn(#"Changed Type1", "Month Name", each Date.MonthName([data_inicial]), type text),
+    // Capitalizar a letra inicial do mês.
+    #"Capitalized Each Word" = Table.TransformColumns(#"Inserted Month Name",{{"Month Name", Text.Proper, type text}}),
+    // Extrair apenas os três primeiros caracteres do nome do mês.
+    #"Extracted First Characters" = Table.TransformColumns(#"Capitalized Each Word", {{"Month Name", each Text.Start(_, 3), type text}}),
+    // Concatenar ano e mês.
+    #"Added Custom" = Table.AddColumn(#"Extracted First Characters", "Mês/Ano", each [Month Name]&"/"&[Year]),
+    // Renomear colunas para convenção da base de dados.
+    #"Renamed Columns" = Table.RenameColumns(#"Added Custom",{{"Year", "ano"}, {"Month Name", "mes"}, {"Mês/Ano", "mes_ano"}}),
+    // Obter o dia pela coluna data_inicial.
+    #"Inserted Day" = Table.AddColumn(#"Renamed Columns", "dia", each Date.Day([data_inicial]), Int64.Type),
+    // Duplicar coluna para tê-la em inteiro e ser utilizada para classificar a coluna em texto.
+    #"Duplicated Column" = Table.DuplicateColumn(#"Inserted Day", "ano", "ano - Copy"),
+    // Duplicar coluna para tê-la em inteiro e ser utilizada para classificar a coluna em texto.
+    #"Renamed Columns2" = Table.RenameColumns(#"Duplicated Column",{{"ano - Copy", "anonum"}}),
+    // Duplicar coluna para tê-la em inteiro e ser utilizada para classificar a coluna em texto.
+    #"Changed Type2" = Table.TransformColumnTypes(#"Renamed Columns2",{{"anonum", Int64.Type}}),
+    // Obter o número do mês pela coluna data_inicial.
+    #"Inserted Month" = Table.AddColumn(#"Changed Type2", "mesnum", each Date.ToText([data_inicial], "myyyy")),
+    // Adicionar coluna com a quantidade de fontes de cada município.
+    #"Added Conditional Column" = Table.AddColumn(#"Inserted Month", "qtd_fontes", each if [fonte_3] <> "None" then "três" else if [fonte_2] <> "None" then "duas" else "uma"),
+    // Duplicar coluna de fonte 1 para analisar os domínios.
+    #"Duplicated Column1" = Table.DuplicateColumn(#"Added Conditional Column", "fonte_1", "fonte_1 - Copy"),
+    // Extrair o que está antes do : para capturar o protocolo.
+    #"Inserted Text Before Delimiter" = Table.AddColumn(#"Duplicated Column1", "Protocolo", each Text.BeforeDelimiter([#"fonte_1"], ":"), type text),
+    // Inserir o formato completo do protocolo.
+    #"Replaced Value2" = Table.ReplaceValue(#"Inserted Text Before Delimiter","http","http://",Replacer.ReplaceValue,{"Protocolo"}),
+    // Inserir o formato correto do protocolo.
+    #"Replaced Value3" = Table.ReplaceValue(#"Replaced Value2","https","https://",Replacer.ReplaceText,{"Protocolo"}),
+    // Extrair o que vem depois do protocolo.
+    #"Extracted Text After Delimiter" = Table.TransformColumns(#"Replaced Value3", {{"fonte_1 - Copy", each Text.AfterDelimiter(_, "//"), type text}}),
+    // Excluir o www.
+    #"Replaced Value" = Table.ReplaceValue(#"Extracted Text After Delimiter","www.","",Replacer.ReplaceText,{"fonte_1 - Copy"}),
+    // Excluir o ww2.
+    #"Replaced Value1" = Table.ReplaceValue(#"Replaced Value","ww2.","",Replacer.ReplaceText,{"fonte_1 - Copy"}),
+    // Extrair o domínio.
+    #"Inserted Text Before Delimiter1" = Table.AddColumn(#"Replaced Value1", "Text Before Delimiter", each Text.BeforeDelimiter([#"fonte_1 - Copy"], "."), type text),
+    // Duplicar para pegar a extensão.
+    #"Duplicated Column2" = Table.DuplicateColumn(#"Inserted Text Before Delimiter1", "fonte_1 - Copy", "fonte_1 - Copy - Copy"),
+    // Extrair até o final da extensão.
+    #"Inserted Text Before Delimiter2" = Table.AddColumn(#"Duplicated Column2", "Text Before Delimiter.1", each Text.BeforeDelimiter([#"fonte_1 - Copy"], "/"), type text),
+    // Remover coluna não utilizada.
+    #"Removed Columns1" = Table.RemoveColumns(#"Inserted Text Before Delimiter2",{"fonte_1 - Copy - Copy"}),
+    // Extrair somente a extensão.
+    #"Extracted Text After Delimiter1" = Table.TransformColumns(#"Removed Columns1", {{"Text Before Delimiter.1", each Text.AfterDelimiter(_, "."), type text}}),
+    // Renomear conforme convenção da base.
+    #"Renamed Columns1" = Table.RenameColumns(#"Extracted Text After Delimiter1",{{"Text Before Delimiter.1", "extensao"}, {"Protocolo", "protocolo"}, {"Text Before Delimiter", "dominio"}})
+in
+    #"Renamed Columns1"
